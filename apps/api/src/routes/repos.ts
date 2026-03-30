@@ -94,9 +94,11 @@ export async function repoRoutes(app: FastifyInstance) {
     try {
       const { retrieveSecret } = await import("../services/secret-service.js");
       const { detectRepoConfig } = await import("../services/repo-detect-service.js");
+      const { getStoredGithubUrl } = await import("../services/github-url-service.js");
       const githubToken = await retrieveSecret("GITHUB_TOKEN").catch(() => null);
       if (githubToken) {
-        const detected = await detectRepoConfig(body.repoUrl, githubToken);
+        const githubUrl = await getStoredGithubUrl(workspaceId);
+        const detected = await detectRepoConfig(body.repoUrl, githubToken, githubUrl);
         if (detected.imagePreset !== "base" || detected.testCommand) {
           await repoService.updateRepo(repo.id, {
             imagePreset: detected.imagePreset,
@@ -186,8 +188,10 @@ export async function repoRoutes(app: FastifyInstance) {
     try {
       const { retrieveSecret } = await import("../services/secret-service.js");
       const { detectRepoConfig } = await import("../services/repo-detect-service.js");
+      const { getStoredGithubUrl } = await import("../services/github-url-service.js");
       const githubToken = await retrieveSecret("GITHUB_TOKEN");
-      const detected = await detectRepoConfig(repo.repoUrl, githubToken);
+      const githubUrl = await getStoredGithubUrl(wsId);
+      const detected = await detectRepoConfig(repo.repoUrl, githubToken, githubUrl);
       await repoService.updateRepo(id, {
         imagePreset: detected.imagePreset,
         testCommand: detected.testCommand ?? undefined,

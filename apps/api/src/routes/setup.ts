@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { checkRuntimeHealth } from "../services/container-service.js";
 import { listSecrets, retrieveSecret } from "../services/secret-service.js";
 import { isSubscriptionAvailable } from "../services/auth-service.js";
+import { githubApi, parseOwnerRepo, getTokenCreationUrl } from "@optio/shared";
 
 export async function setupRoutes(app: FastifyInstance) {
   // Check if the system has been set up (secrets exist)
@@ -12,6 +13,7 @@ export async function setupRoutes(app: FastifyInstance) {
     const hasAnthropicKey = secretNames.includes("ANTHROPIC_API_KEY");
     const hasOpenAIKey = secretNames.includes("OPENAI_API_KEY");
     const hasGithubToken = secretNames.includes("GITHUB_TOKEN");
+    const hasGithubUrl = secretNames.includes("GITHUB_URL");
 
     // Check if using Max subscription or OAuth token mode
     let usingSubscription = false;
@@ -45,8 +47,18 @@ export async function setupRoutes(app: FastifyInstance) {
 
     const isSetUp = hasAnyAgentKey && hasGithubToken && runtimeHealthy;
 
+    // Retrieve the stored GitHub URL if present
+    let githubUrl: string | null = null;
+    if (hasGithubUrl) {
+      try {
+        githubUrl = await retrieveSecret("GITHUB_URL");
+      } catch {}
+    }
+
     reply.send({
       isSetUp,
+      githubUrl,
+      tokenCreationUrl: getTokenCreationUrl(githubUrl),
       steps: {
         runtime: { done: runtimeHealthy, label: "Container runtime" },
         githubToken: { done: hasGithubToken, label: "GitHub token" },
@@ -60,11 +72,12 @@ export async function setupRoutes(app: FastifyInstance) {
 
   // Validate a GitHub token by trying to get the authenticated user
   app.post("/api/setup/validate/github-token", async (req, reply) => {
-    const { token } = req.body as { token: string };
+    const { token, githubUrl } = req.body as { token: string; githubUrl?: string };
     if (!token) return reply.status(400).send({ valid: false, error: "Token is required" });
 
     try {
-      const res = await fetch("https://api.github.com/user", {
+      const api = githubApi(githubUrl);
+      const res = await fetch(api.user(), {
         headers: { Authorization: `Bearer ${token}`, "User-Agent": "Optio" },
       });
       if (!res.ok) {
@@ -122,15 +135,18 @@ export async function setupRoutes(app: FastifyInstance) {
 
   // List recent repos for the authenticated user
   app.post("/api/setup/repos", async (req, reply) => {
-    const { token } = req.body as { token: string };
+    const { token, githubUrl } = req.body as { token: string; githubUrl?: string };
     if (!token) return reply.status(400).send({ repos: [], error: "Token is required" });
 
     try {
       const headers = { Authorization: `Bearer ${token}`, "User-Agent": "Optio" };
+      const api = githubApi(githubUrl);
 
       // Fetch repos sorted by most recently pushed
       const res = await fetch(
-        "https://api.github.com/user/repos?sort=pushed&direction=desc&per_page=20&affiliation=owner,collaborator,organization_member",
+        api.userRepos(
+          "sort=pushed&direction=desc&per_page=20&affiliation=owner,collaborator,organization_member",
+        ),
         { headers },
       );
       if (!res.ok) {
@@ -167,21 +183,33 @@ export async function setupRoutes(app: FastifyInstance) {
 
   // Validate repo access (try to ls-remote)
   app.post("/api/setup/validate/repo", async (req, reply) => {
-    const { repoUrl, token } = req.body as { repoUrl: string; token?: string };
+    const { repoUrl, token, githubUrl } = req.body as {
+      repoUrl: string;
+      token?: string;
+      githubUrl?: string;
+    };
     if (!repoUrl) return reply.status(400).send({ valid: false, error: "Repo URL is required" });
 
     try {
-      // Use the GitHub API to check if the repo exists and is accessible
-      const match = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-      if (!match) {
+      // Use stored GITHUB_URL as fallback if not passed explicitly
+      let effectiveGithubUrl = githubUrl;
+      if (!effectiveGithubUrl) {
+        try {
+          effectiveGithubUrl = await retrieveSecret("GITHUB_URL");
+        } catch {}
+      }
+
+      const parsed = parseOwnerRepo(repoUrl, effectiveGithubUrl);
+      if (!parsed) {
         return reply.send({ valid: false, error: "Could not parse GitHub repo from URL" });
       }
-      const [, owner, repo] = match;
+      const { owner, repo } = parsed;
       const headers: Record<string, string> = { "User-Agent": "Optio" };
       const effectiveToken = token ?? (await retrieveSecret("GITHUB_TOKEN").catch(() => null));
       if (effectiveToken) headers["Authorization"] = `Bearer ${effectiveToken}`;
 
-      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
+      const api = githubApi(effectiveGithubUrl);
+      const res = await fetch(api.repo(owner, repo), { headers });
       if (res.ok) {
         const data = (await res.json()) as {
           full_name: string;

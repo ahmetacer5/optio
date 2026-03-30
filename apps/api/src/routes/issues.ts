@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { db } from "../db/client.js";
 import { repos, tasks } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
-import { normalizeRepoUrl } from "@optio/shared";
+import { normalizeRepoUrl, parseOwnerRepo, githubApi } from "@optio/shared";
 import { retrieveSecret } from "../services/secret-service.js";
+import { getStoredGithubUrl } from "../services/github-url-service.js";
 import { logger } from "../logger.js";
 
 export async function issueRoutes(app: FastifyInstance) {
@@ -17,6 +18,8 @@ export async function issueRoutes(app: FastifyInstance) {
     } catch {
       return reply.status(503).send({ issues: [], error: "No GitHub token configured" });
     }
+
+    const githubUrl = await getStoredGithubUrl(req.user?.workspaceId);
 
     const headers = {
       Authorization: `Bearer ${githubToken}`,
@@ -67,17 +70,22 @@ export async function issueRoutes(app: FastifyInstance) {
         ]),
     );
 
+    const api = githubApi(githubUrl);
     const allIssues: any[] = [];
 
     for (const repo of repoList) {
       try {
-        const match = repo.repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-        if (!match) continue;
-        const [, owner, repoName] = match;
+        const parsed = parseOwnerRepo(repo.repoUrl, githubUrl);
+        if (!parsed) continue;
+        const { owner, repo: repoName } = parsed;
 
         const issueState = query.state ?? "open";
         const res = await fetch(
-          `https://api.github.com/repos/${owner}/${repoName}/issues?state=${issueState}&per_page=50&sort=updated&direction=desc`,
+          api.issues(
+            owner,
+            repoName,
+            `state=${issueState}&per_page=50&sort=updated&direction=desc`,
+          ),
           { headers },
         );
 
@@ -157,10 +165,12 @@ export async function issueRoutes(app: FastifyInstance) {
       return reply.status(503).send({ error: "No GitHub token configured" });
     }
 
-    const match = repo.repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-    if (!match) return reply.status(400).send({ error: "Cannot parse repo URL" });
-    const [, owner, repoName] = match;
+    const githubUrl = await getStoredGithubUrl(wsId);
+    const parsed = parseOwnerRepo(repo.repoUrl, githubUrl);
+    if (!parsed) return reply.status(400).send({ error: "Cannot parse repo URL" });
+    const { owner, repo: repoName } = parsed;
 
+    const api = githubApi(githubUrl);
     const headers = {
       Authorization: `Bearer ${githubToken}`,
       "User-Agent": "Optio",
@@ -171,7 +181,7 @@ export async function issueRoutes(app: FastifyInstance) {
     // Add the "optio" label to the issue
     try {
       // Ensure the label exists
-      await fetch(`https://api.github.com/repos/${owner}/${repoName}/labels`, {
+      await fetch(api.labels(owner, repoName), {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -182,14 +192,11 @@ export async function issueRoutes(app: FastifyInstance) {
       }); // Ignore errors (label may already exist)
 
       // Add label to issue
-      await fetch(
-        `https://api.github.com/repos/${owner}/${repoName}/issues/${body.issueNumber}/labels`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ labels: ["optio"] }),
-        },
-      );
+      await fetch(api.issueLabels(owner, repoName, body.issueNumber), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ labels: ["optio"] }),
+      });
     } catch (err) {
       logger.warn({ err }, "Failed to add optio label");
     }
@@ -206,7 +213,7 @@ export async function issueRoutes(app: FastifyInstance) {
       agentType: body.agentType ?? "claude-code",
       ticketSource: "github",
       ticketExternalId: String(body.issueNumber),
-      metadata: { issueUrl: `https://github.com/${owner}/${repoName}/issues/${body.issueNumber}` },
+      metadata: { issueUrl: `${repo.repoUrl}/issues/${body.issueNumber}` },
       workspaceId: req.user?.workspaceId ?? null,
     });
 
@@ -224,16 +231,13 @@ export async function issueRoutes(app: FastifyInstance) {
 
     // Comment on the issue
     try {
-      await fetch(
-        `https://api.github.com/repos/${owner}/${repoName}/issues/${body.issueNumber}/comments`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            body: `**Optio** is working on this issue.\n\nTask ID: \`${task.id}\`\nAgent: ${body.agentType ?? "claude-code"}`,
-          }),
-        },
-      );
+      await fetch(api.issueComments(owner, repoName, body.issueNumber), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          body: `**Optio** is working on this issue.\n\nTask ID: \`${task.id}\`\nAgent: ${body.agentType ?? "claude-code"}`,
+        }),
+      });
     } catch {}
 
     reply.status(201).send({ task });

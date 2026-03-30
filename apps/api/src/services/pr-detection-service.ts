@@ -1,5 +1,10 @@
-import { TASK_BRANCH_PREFIX } from "@optio/shared";
+import {
+  TASK_BRANCH_PREFIX,
+  parseOwnerRepo as sharedParseOwnerRepo,
+  githubApi,
+} from "@optio/shared";
 import { retrieveSecretWithFallback } from "./secret-service.js";
+import { getStoredGithubUrl } from "./github-url-service.js";
 import { logger } from "../logger.js";
 
 export interface ExistingPr {
@@ -11,11 +16,14 @@ export interface ExistingPr {
 /**
  * Extract owner and repo from a normalized repo URL.
  * e.g. "https://github.com/owner/repo" → { owner: "owner", repo: "repo" }
+ *
+ * Supports GitHub Enterprise when githubUrl is provided.
  */
-export function parseOwnerRepo(repoUrl: string): { owner: string; repo: string } | null {
-  const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
-  if (!match) return null;
-  return { owner: match[1], repo: match[2] };
+export function parseOwnerRepo(
+  repoUrl: string,
+  githubUrl?: string | null,
+): { owner: string; repo: string } | null {
+  return sharedParseOwnerRepo(repoUrl, githubUrl);
 }
 
 /**
@@ -31,7 +39,8 @@ export async function checkExistingPr(
   taskId: string,
   workspaceId: string | null,
 ): Promise<ExistingPr | null> {
-  const parsed = parseOwnerRepo(repoUrl);
+  const githubUrl = await getStoredGithubUrl(workspaceId);
+  const parsed = parseOwnerRepo(repoUrl, githubUrl);
   if (!parsed) {
     logger.debug({ repoUrl }, "Cannot parse owner/repo from URL — skipping PR check");
     return null;
@@ -48,18 +57,16 @@ export async function checkExistingPr(
 
   const branch = `${TASK_BRANCH_PREFIX}${taskId}`;
   const { owner, repo } = parsed;
+  const api = githubApi(githubUrl);
 
   try {
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${branch}&state=open`,
-      {
-        headers: {
-          Authorization: `Bearer ${githubToken}`,
-          "User-Agent": "Optio",
-          Accept: "application/vnd.github.v3+json",
-        },
+    const res = await fetch(api.pulls(owner, repo, `head=${owner}:${branch}&state=open`), {
+      headers: {
+        Authorization: `Bearer ${githubToken}`,
+        "User-Agent": "Optio",
+        Accept: "application/vnd.github.v3+json",
       },
-    );
+    });
 
     if (!res.ok) {
       logger.debug({ status: res.status }, "GitHub API error checking for existing PR");

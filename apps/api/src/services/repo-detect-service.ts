@@ -1,3 +1,4 @@
+import { parseOwnerRepo, githubApi } from "@optio/shared";
 import { logger } from "../logger.js";
 
 interface DetectedConfig {
@@ -9,22 +10,27 @@ interface DetectedConfig {
 /**
  * Detect the appropriate image preset and test command by checking
  * the GitHub API for files in the repo root.
+ *
+ * Supports GitHub Enterprise when githubUrl is provided.
  */
 export async function detectRepoConfig(
   repoUrl: string,
   githubToken: string,
+  githubUrl?: string | null,
 ): Promise<DetectedConfig> {
-  const match = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-  if (!match) return { imagePreset: "base", languages: [] };
-  const [, owner, repo] = match;
+  const parsed = parseOwnerRepo(repoUrl, githubUrl);
+  if (!parsed) return { imagePreset: "base", languages: [] };
+  const { owner, repo } = parsed;
 
   const headers = {
     Authorization: `Bearer ${githubToken}`,
     "User-Agent": "Optio",
   };
 
+  const api = githubApi(githubUrl);
+
   try {
-    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/`, { headers });
+    const res = await fetch(api.repoContents(owner, repo), { headers });
     if (!res.ok) return { imagePreset: "base", languages: [] };
 
     const files = (await res.json()) as Array<{ name: string; type: string }>;

@@ -1,5 +1,6 @@
 import type { OAuthProvider, OAuthTokens, OAuthUser } from "./provider.js";
 import { getCallbackUrl } from "./provider.js";
+import { getGithubApiUrl, normalizeGithubUrl } from "@optio/shared";
 
 export class GitHubOAuthProvider implements OAuthProvider {
   name = "github";
@@ -12,6 +13,16 @@ export class GitHubOAuthProvider implements OAuthProvider {
     return process.env.GITHUB_OAUTH_CLIENT_SECRET ?? "";
   }
 
+  /** Base URL of the GitHub instance (e.g., "https://github.example.com"). */
+  private get githubUrl(): string {
+    return normalizeGithubUrl(process.env.GITHUB_OAUTH_BASE_URL);
+  }
+
+  /** REST API base URL (e.g., "https://api.github.com" or "https://ghe.example.com/api/v3"). */
+  private get apiUrl(): string {
+    return getGithubApiUrl(process.env.GITHUB_OAUTH_BASE_URL);
+  }
+
   authorizeUrl(state: string): string {
     const params = new URLSearchParams({
       client_id: this.clientId,
@@ -19,11 +30,11 @@ export class GitHubOAuthProvider implements OAuthProvider {
       scope: "read:user user:email",
       state,
     });
-    return `https://github.com/login/oauth/authorize?${params}`;
+    return `${this.githubUrl}/login/oauth/authorize?${params}`;
   }
 
   async exchangeCode(code: string): Promise<OAuthTokens> {
-    const res = await fetch("https://github.com/login/oauth/access_token", {
+    const res = await fetch(`${this.githubUrl}/login/oauth/access_token`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -48,10 +59,10 @@ export class GitHubOAuthProvider implements OAuthProvider {
 
   async fetchUser(accessToken: string): Promise<OAuthUser> {
     const [userRes, emailsRes] = await Promise.all([
-      fetch("https://api.github.com/user", {
+      fetch(`${this.apiUrl}/user`, {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
       }),
-      fetch("https://api.github.com/user/emails", {
+      fetch(`${this.apiUrl}/user/emails`, {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
       }),
     ]);

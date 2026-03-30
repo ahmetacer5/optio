@@ -10,6 +10,10 @@ vi.mock("../db/client.js", () => ({
   },
 }));
 
+vi.mock("./github-url-service.js", () => ({
+  getStoredGithubUrl: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("../db/schema.js", () => ({
   tasks: {
     id: "tasks.id",

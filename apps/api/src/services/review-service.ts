@@ -3,6 +3,7 @@ import {
   DEFAULT_REVIEW_PROMPT_TEMPLATE,
   REVIEW_TASK_FILE_PATH,
   renderPromptTemplate,
+  extractRepoFullName,
 } from "@optio/shared";
 import * as taskService from "./task-service.js";
 import { taskQueue } from "../workers/task-worker.js";
@@ -41,7 +42,7 @@ export async function launchReview(parentTaskId: string): Promise<string> {
 
   // Build the review prompt
   const reviewTemplate = repoConfig?.reviewPromptTemplate ?? DEFAULT_REVIEW_PROMPT_TEMPLATE;
-  const repoName = parentTask.repoUrl.replace(/.*github\.com[/:]/, "").replace(/\.git$/, "");
+  const repoName = extractRepoFullName(parentTask.repoUrl);
 
   const renderedPrompt = renderPromptTemplate(reviewTemplate, {
     PR_NUMBER: String(prNumber),

@@ -6,6 +6,7 @@ import {
   type Ticket,
   type TicketProviderConfig,
 } from "@optio/shared";
+import { getGithubApiUrl } from "@optio/shared";
 import type { TicketProvider } from "./types.js";
 
 export interface GitHubProviderConfig extends TicketProviderConfig {
@@ -13,6 +14,8 @@ export interface GitHubProviderConfig extends TicketProviderConfig {
   owner: string;
   repo: string;
   label?: string;
+  /** Base URL of the GitHub instance (e.g., "https://github.example.com"). Omit for public GitHub. */
+  githubUrl?: string;
   /** Max pages to fetch (default: DEFAULT_MAX_TICKET_PAGES). Set to prevent runaway pagination. */
   maxPages?: number;
 }
@@ -25,12 +28,20 @@ function asGitHubConfig(config: TicketProviderConfig): GitHubProviderConfig {
   return c;
 }
 
+function createOctokit(ghConfig: GitHubProviderConfig) {
+  const opts: { auth: string; baseUrl?: string } = { auth: ghConfig.token };
+  if (ghConfig.githubUrl) {
+    opts.baseUrl = getGithubApiUrl(ghConfig.githubUrl);
+  }
+  return new Octokit(opts);
+}
+
 export class GitHubTicketProvider implements TicketProvider {
   readonly source = TicketSource.GITHUB;
 
   async fetchActionableTickets(config: TicketProviderConfig): Promise<Ticket[]> {
     const ghConfig = asGitHubConfig(config);
-    const octokit = new Octokit({ auth: ghConfig.token });
+    const octokit = createOctokit(ghConfig);
     const label = ghConfig.label ?? DEFAULT_TICKET_LABEL;
     const maxPages = ghConfig.maxPages ?? DEFAULT_MAX_TICKET_PAGES;
 
@@ -82,7 +93,7 @@ export class GitHubTicketProvider implements TicketProvider {
 
   async addComment(ticketId: string, comment: string, config: TicketProviderConfig): Promise<void> {
     const ghConfig = asGitHubConfig(config);
-    const octokit = new Octokit({ auth: ghConfig.token });
+    const octokit = createOctokit(ghConfig);
 
     await octokit.issues.createComment({
       owner: ghConfig.owner,
@@ -98,7 +109,7 @@ export class GitHubTicketProvider implements TicketProvider {
     config: TicketProviderConfig,
   ): Promise<void> {
     const ghConfig = asGitHubConfig(config);
-    const octokit = new Octokit({ auth: ghConfig.token });
+    const octokit = createOctokit(ghConfig);
 
     await octokit.issues.update({
       owner: ghConfig.owner,
