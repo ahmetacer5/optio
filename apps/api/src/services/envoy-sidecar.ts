@@ -11,6 +11,7 @@
  */
 
 import type { V1Container, V1Volume, V1VolumeMount, V1EnvVar } from "@kubernetes/client-node";
+import { getGithubHost, getGithubApiUrl, normalizeGithubUrl } from "@optio/shared";
 
 /** Envoy listener port inside the pod (localhost only). */
 export const ENVOY_PROXY_PORT = 10080;
@@ -35,12 +36,26 @@ export interface SecretProxySecrets {
  *
  * Envoy is configured as an HTTP forward proxy (using the CONNECT method for
  * HTTPS). For matched upstream hosts it injects the appropriate auth headers.
+ *
+ * @param secrets - The secrets to inject
+ * @param githubUrl - Optional GitHub Enterprise base URL. When set, the proxy
+ *   targets the enterprise host instead of api.github.com / github.com.
  */
-export function generateEnvoyConfig(secrets: SecretProxySecrets): string {
+export function generateEnvoyConfig(
+  secrets: SecretProxySecrets,
+  githubUrl?: string | null,
+): string {
   const clusters: string[] = [];
   const routes: string[] = [];
 
   if (secrets.githubToken) {
+    const ghHost = getGithubHost(githubUrl);
+    const ghBase = normalizeGithubUrl(githubUrl);
+    const isEnterprise = ghHost !== "github.com";
+    // For public GitHub: API is at api.github.com, main site at github.com
+    // For GHE: both API and site are at the same host
+    const apiHost = isEnterprise ? ghHost : "api.github.com";
+
     clusters.push(`
     - name: github
       type: STRICT_DNS
@@ -52,13 +67,17 @@ export function generateEnvoyConfig(secrets: SecretProxySecrets): string {
               - endpoint:
                   address:
                     socket_address:
-                      address: api.github.com
+                      address: ${apiHost}
                       port_value: 443
       transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-          sni: api.github.com
+          sni: ${apiHost}`);
+
+    if (!isEnterprise) {
+      // Public GitHub needs a separate cluster for github.com (non-API)
+      clusters.push(`
     - name: github_main
       type: STRICT_DNS
       dns_lookup_family: V4_ONLY
@@ -76,6 +95,7 @@ export function generateEnvoyConfig(secrets: SecretProxySecrets): string {
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
           sni: github.com`);
+    }
 
     routes.push(`
               - match:
@@ -83,7 +103,7 @@ export function generateEnvoyConfig(secrets: SecretProxySecrets): string {
                   headers:
                     - name: ":authority"
                       string_match:
-                        contains: "api.github.com"
+                        contains: "${apiHost}"
                 route:
                   cluster: github
                   upgrade_configs:
@@ -104,7 +124,8 @@ export function generateEnvoyConfig(secrets: SecretProxySecrets): string {
                         header: "Authorization"
                         value_prefix: "Bearer "`);
 
-    routes.push(`
+    if (!isEnterprise) {
+      routes.push(`
               - match:
                   connect_matcher: {}
                   headers:
@@ -130,6 +151,7 @@ export function generateEnvoyConfig(secrets: SecretProxySecrets): string {
                             path: /dev/null
                         header: "Authorization"
                         value_prefix: "Bearer "`);
+    }
   }
 
   if (secrets.anthropicApiKey) {

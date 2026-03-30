@@ -9,10 +9,12 @@ import {
   DEFAULT_MAX_TURNS_REVIEW,
   type PresetImageId,
   msUntilOffPeak,
+  extractRepoFullName,
 } from "@optio/shared";
 import { getAdapter } from "@optio/agent-adapters";
 import { parseClaudeEvent } from "../services/agent-event-parser.js";
 import { parseCodexEvent } from "../services/codex-event-parser.js";
+import { getStoredGithubUrl } from "../services/github-url-service.js";
 import { checkExistingPr } from "../services/pr-detection-service.js";
 import { db } from "../db/client.js";
 import { tasks } from "../db/schema.js";
@@ -226,7 +228,7 @@ export function startTaskWorker() {
 
         // repoConfig already loaded above for concurrency check
 
-        const repoName = task.repoUrl.replace(/.*github\.com[/:]/, "").replace(/\.git$/, "");
+        const repoName = extractRepoFullName(task.repoUrl);
         const branchName = `${TASK_BRANCH_PREFIX}${task.id}`;
         const taskFilePath = TASK_FILE_PATH;
 
@@ -372,6 +374,7 @@ export function startTaskWorker() {
         const imageConfig = repoConfig
           ? { preset: (repoConfig.imagePreset ?? "base") as PresetImageId }
           : undefined;
+        const storedGithubUrl = await getStoredGithubUrl(taskWorkspaceId);
         const pod = await repoPool.getOrCreateRepoPod(
           task.repoUrl,
           task.repoBranch,
@@ -388,6 +391,7 @@ export function startTaskWorker() {
             memoryLimit: repoConfig?.memoryLimit,
             dockerInDocker: repoConfig?.dockerInDocker ?? false,
             secretProxy: repoConfig?.secretProxy ?? false,
+            githubUrl: storedGithubUrl,
           },
         );
         repoPodId = pod.id;
@@ -488,7 +492,7 @@ export function startTaskWorker() {
               // agent referencing another repo's PR (e.g. via gh pr list on a
               // dependency) would store the wrong URL.
               if (!capturedPrUrl) {
-                const prUrlPattern = /https:\/\/github\.com\/[^\s"]+\/pull\/\d+/g;
+                const prUrlPattern = /https?:\/\/[^\s"]+\/pull\/\d+/g;
                 const prMatches = entry.content.match(prUrlPattern);
                 if (prMatches) {
                   const taskBranch = `optio/task-${taskId}`;
@@ -496,13 +500,11 @@ export function startTaskWorker() {
                   const looksLikeJsonArray =
                     content.startsWith("[") && content.includes('"number"');
                   // Filter to only URLs matching the task's repo
-                  const expectedRepo = task.repoUrl
-                    .replace(/.*github\.com[/:]/, "")
-                    .replace(/\.git$/, "")
-                    .toLowerCase();
+                  const expectedRepo = extractRepoFullName(task.repoUrl).toLowerCase();
                   const repoMatches = prMatches.filter((url) => {
+                    // Strip protocol+host and /pull/... to get owner/repo
                     const urlRepo = url
-                      .replace(/.*github\.com\//, "")
+                      .replace(/^https?:\/\/[^/]+\//, "")
                       .replace(/\/pull\/.*/, "")
                       .toLowerCase();
                     return urlRepo === expectedRepo;
@@ -563,12 +565,9 @@ export function startTaskWorker() {
         //      inside code the agent wrote, or PRs from other repos).
         let fallbackPrUrl = result.prUrl;
         if (fallbackPrUrl) {
-          const expectedRepo = task.repoUrl
-            .replace(/.*github\.com[/:]/, "")
-            .replace(/\.git$/, "")
-            .toLowerCase();
+          const expectedRepo = extractRepoFullName(task.repoUrl).toLowerCase();
           const urlRepo = fallbackPrUrl
-            .replace(/.*github\.com\//, "")
+            .replace(/^https?:\/\/[^/]+\//, "")
             .replace(/\/pull\/.*/, "")
             .toLowerCase();
           if (urlRepo !== expectedRepo) {

@@ -2,8 +2,9 @@ import { Queue, Worker } from "bullmq";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { tasks, taskEvents, sessionPrs, interactiveSessions } from "../db/schema.js";
-import { TaskState } from "@optio/shared";
+import { TaskState, parsePrUrl, githubApi } from "@optio/shared";
 import { retrieveSecretWithFallback } from "../services/secret-service.js";
+import { getStoredGithubUrl } from "../services/github-url-service.js";
 import * as taskService from "../services/task-service.js";
 import { updateSessionPr } from "../services/interactive-session-service.js";
 import { taskQueue } from "./task-worker.js";
@@ -148,8 +149,9 @@ export function startPrWatcherWorker() {
   const worker = new Worker(
     "pr-watcher",
     async () => {
-      // Cache GitHub tokens per workspace to avoid repeated DB lookups
+      // Cache GitHub tokens and URLs per workspace to avoid repeated DB lookups
       const tokenCache = new Map<string, string | null>();
+      const urlCache = new Map<string, string | null>();
       const getGithubToken = async (workspaceId: string | null): Promise<string | null> => {
         const cacheKey = workspaceId ?? "__global__";
         if (tokenCache.has(cacheKey)) return tokenCache.get(cacheKey)!;
@@ -161,6 +163,13 @@ export function startPrWatcherWorker() {
           tokenCache.set(cacheKey, null);
           return null;
         }
+      };
+      const getGithubUrl = async (workspaceId: string | null): Promise<string | null> => {
+        const cacheKey = workspaceId ?? "__global__";
+        if (urlCache.has(cacheKey)) return urlCache.get(cacheKey)!;
+        const url = await getStoredGithubUrl(workspaceId);
+        urlCache.set(cacheKey, url);
+        return url;
       };
 
       // --- Task PR watching ---
@@ -188,34 +197,26 @@ export function startPrWatcherWorker() {
           if (!task.prUrl) continue;
 
           try {
-            // Parse owner/repo/number from PR URL
-            const match = task.prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-            if (!match) continue;
-            const [, owner, repo, prNumStr] = match;
-            const prNumber = parseInt(prNumStr, 10);
+            // Parse owner/repo/number from PR URL using configured GitHub URL
+            const githubUrl = await getGithubUrl(taskWsId);
+            const prParsed = parsePrUrl(task.prUrl, githubUrl);
+            if (!prParsed) continue;
+            const { owner, repo, prNumber } = prParsed;
+            const api = githubApi(githubUrl);
 
             // Fetch PR data
-            const prRes = await fetch(
-              `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
-              { headers },
-            );
+            const prRes = await fetch(api.pull(owner, repo, prNumber), { headers });
             if (!prRes.ok) continue;
             const prData = (await prRes.json()) as any;
 
             // Fetch check runs
-            const checksRes = await fetch(
-              `https://api.github.com/repos/${owner}/${repo}/commits/${prData.head.sha}/check-runs`,
-              { headers },
-            );
+            const checksRes = await fetch(api.checkRuns(owner, repo, prData.head.sha), { headers });
             const checksData = checksRes.ok
               ? ((await checksRes.json()) as any)
               : { check_runs: [] };
 
             // Fetch reviews
-            const reviewsRes = await fetch(
-              `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
-              { headers },
-            );
+            const reviewsRes = await fetch(api.pullReviews(owner, repo, prNumber), { headers });
             const reviewsData = reviewsRes.ok ? ((await reviewsRes.json()) as any[]) : [];
 
             // Determine check status
@@ -246,10 +247,9 @@ export function startPrWatcherWorker() {
                   reviewStatus = "changes_requested";
                   reviewComments = latest.body || "";
                   // Also fetch review comments (inline)
-                  const commentsRes = await fetch(
-                    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
-                    { headers },
-                  );
+                  const commentsRes = await fetch(api.pullComments(owner, repo, prNumber), {
+                    headers,
+                  });
                   if (commentsRes.ok) {
                     const comments = (await commentsRes.json()) as any[];
                     const recent = comments.slice(-5);
@@ -405,14 +405,11 @@ export function startPrWatcherWorker() {
                   continue;
 
                 case "auto_merge": {
-                  const mergeRes = await fetch(
-                    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/merge`,
-                    {
-                      method: "PUT",
-                      headers: { ...headers, "Content-Type": "application/json" },
-                      body: JSON.stringify({ merge_method: "squash" }),
-                    },
-                  );
+                  const mergeRes = await fetch(api.pullMerge(owner, repo, prNumber), {
+                    method: "PUT",
+                    headers: { ...headers, "Content-Type": "application/json" },
+                    body: JSON.stringify({ merge_method: "squash" }),
+                  });
                   if (mergeRes.ok) {
                     await taskService.transitionTask(
                       task.id,
@@ -522,30 +519,30 @@ export function startPrWatcherWorker() {
             );
 
           const sessionGithubToken = await getGithubToken(null);
+          const sessionGithubUrl = await getGithubUrl(null);
           if (openSessionPrs.length > 0 && sessionGithubToken) {
             const sessionHeaders = {
               Authorization: `Bearer ${sessionGithubToken}`,
               "User-Agent": "Optio",
               Accept: "application/vnd.github.v3+json",
             };
+            const sessionApi = githubApi(sessionGithubUrl);
 
             for (const spr of openSessionPrs) {
               try {
-                const match = spr.prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-                if (!match) continue;
-                const [, sprOwner, sprRepo, sprNumStr] = match;
-                const sprNumber = parseInt(sprNumStr, 10);
+                const sprParsed = parsePrUrl(spr.prUrl, sessionGithubUrl);
+                if (!sprParsed) continue;
+                const { owner: sprOwner, repo: sprRepo, prNumber: sprNumber } = sprParsed;
 
-                const sprRes = await fetch(
-                  `https://api.github.com/repos/${sprOwner}/${sprRepo}/pulls/${sprNumber}`,
-                  { headers: sessionHeaders },
-                );
+                const sprRes = await fetch(sessionApi.pull(sprOwner, sprRepo, sprNumber), {
+                  headers: sessionHeaders,
+                });
                 if (!sprRes.ok) continue;
                 const sprData = (await sprRes.json()) as any;
 
                 // Check runs
                 const sprChecksRes = await fetch(
-                  `https://api.github.com/repos/${sprOwner}/${sprRepo}/commits/${sprData.head.sha}/check-runs`,
+                  sessionApi.checkRuns(sprOwner, sprRepo, sprData.head.sha),
                   { headers: sessionHeaders },
                 );
                 const sprChecksData = sprChecksRes.ok
@@ -556,7 +553,7 @@ export function startPrWatcherWorker() {
 
                 // Reviews
                 const sprReviewsRes = await fetch(
-                  `https://api.github.com/repos/${sprOwner}/${sprRepo}/pulls/${sprNumber}/reviews`,
+                  sessionApi.pullReviews(sprOwner, sprRepo, sprNumber),
                   { headers: sessionHeaders },
                 );
                 const sprReviewsData = sprReviewsRes.ok

@@ -54,6 +54,11 @@ export default function SetupPage() {
   const [githubUser, setGithubUser] = useState<{ login: string; name: string } | null>(null);
   const [githubValidated, setGithubValidated] = useState(false);
   const [githubError, setGithubError] = useState("");
+  const [githubUrl, setGithubUrl] = useState("");
+  const [isEnterprise, setIsEnterprise] = useState(false);
+  const [tokenCreationUrl, setTokenCreationUrl] = useState(
+    "https://github.com/settings/tokens/new?scopes=repo,read:org&description=Optio+Agent",
+  );
 
   // Step 3: Agent keys
   const [anthropicKey, setAnthropicKey] = useState("");
@@ -101,12 +106,24 @@ export default function SetupPage() {
   const [ticketOwner, setTicketOwner] = useState("");
   const [ticketRepo, setTicketRepo] = useState("");
 
-  // Check runtime on mount
+  // Check runtime on mount and load stored GitHub URL
   useEffect(() => {
     api
       .getHealth()
       .then((res) => setRuntimeHealthy(res.healthy))
       .catch(() => setRuntimeHealthy(false));
+    api
+      .getSetupStatus()
+      .then((res) => {
+        if (res.githubUrl) {
+          setGithubUrl(res.githubUrl);
+          setIsEnterprise(true);
+        }
+        if (res.tokenCreationUrl) {
+          setTokenCreationUrl(res.tokenCreationUrl);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Check if OAuth token is already stored when reaching the agents step
@@ -120,8 +137,9 @@ export default function SetupPage() {
   useEffect(() => {
     if (currentStep?.id === "repos" && githubToken && suggestedRepos.length === 0) {
       setSuggestedLoading(true);
+      const effectiveGithubUrl = isEnterprise && githubUrl.trim() ? githubUrl.trim() : undefined;
       api
-        .listUserRepos(githubToken)
+        .listUserRepos(githubToken, effectiveGithubUrl)
         .then((res) => setSuggestedRepos(res.repos.slice(0, 8)))
         .catch(() => {})
         .finally(() => setSuggestedLoading(false));
@@ -159,7 +177,8 @@ export default function SetupPage() {
     setLoading(true);
     setGithubError("");
     try {
-      const res = await api.validateGithubToken(token);
+      const effectiveGithubUrl = isEnterprise && githubUrl.trim() ? githubUrl.trim() : undefined;
+      const res = await api.validateGithubToken(token, effectiveGithubUrl);
       if (res.valid && res.user) {
         setGithubUser(res.user);
         setGithubValidated(true);
@@ -231,7 +250,8 @@ export default function SetupPage() {
     if (!repoUrl.trim()) return;
     setLoading(true);
     try {
-      const res = await api.validateRepo(repoUrl, githubToken || undefined);
+      const effectiveGithubUrl = isEnterprise && githubUrl.trim() ? githubUrl.trim() : undefined;
+      const res = await api.validateRepo(repoUrl, githubToken || undefined, effectiveGithubUrl);
       if (res.valid && res.repo) {
         setRepos((prev) =>
           prev.map((r) =>
@@ -270,6 +290,9 @@ export default function SetupPage() {
     setLoading(true);
     try {
       await api.createSecret({ name: "GITHUB_TOKEN", value: githubToken });
+      if (isEnterprise && githubUrl.trim()) {
+        await api.createSecret({ name: "GITHUB_URL", value: githubUrl.trim() });
+      }
       goNext();
     } catch (err) {
       toast.error("Failed to save GitHub token");
@@ -451,8 +474,62 @@ export default function SetupPage() {
                 Create a token with <code className="px-1 py-0.5 bg-bg rounded text-xs">repo</code>{" "}
                 scope, then paste it below.
               </p>
+
+              {/* GitHub Enterprise toggle */}
+              <div className="flex items-center gap-3 p-3 rounded-md bg-bg border border-border">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isEnterprise}
+                    onChange={(e) => {
+                      setIsEnterprise(e.target.checked);
+                      if (!e.target.checked) {
+                        setGithubUrl("");
+                        setTokenCreationUrl(
+                          "https://github.com/settings/tokens/new?scopes=repo,read:org&description=Optio+Agent",
+                        );
+                      }
+                      setGithubValidated(false);
+                      setGithubError("");
+                    }}
+                    className="rounded border-border"
+                  />
+                  <span className="text-sm">Use GitHub Enterprise</span>
+                </label>
+              </div>
+
+              {isEnterprise && (
+                <div>
+                  <label className="block text-sm text-text-muted mb-1.5">
+                    GitHub Enterprise URL
+                  </label>
+                  <input
+                    type="text"
+                    value={githubUrl}
+                    onChange={(e) => {
+                      setGithubUrl(e.target.value);
+                      setGithubValidated(false);
+                      setGithubError("");
+                      // Update token creation URL for the enterprise host
+                      const base = e.target.value.trim().replace(/\/+$/, "");
+                      if (base) {
+                        setTokenCreationUrl(
+                          `${base.startsWith("http") ? base : `https://${base}`}/settings/tokens/new?scopes=repo,read:org&description=Optio+Agent`,
+                        );
+                      }
+                    }}
+                    placeholder="https://github.example.com"
+                    className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm focus:outline-none focus:border-primary"
+                  />
+                  <p className="text-xs text-text-muted mt-1">
+                    The base URL of your GitHub Enterprise instance (e.g.,
+                    https://github.example.com)
+                  </p>
+                </div>
+              )}
+
               <a
-                href="https://github.com/settings/tokens/new?scopes=repo,read:org&description=Optio+Agent"
+                href={tokenCreationUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-bg-hover text-text text-sm hover:bg-border transition-colors"

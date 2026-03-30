@@ -60,6 +60,7 @@ export async function getOrCreateRepoPod(
     memoryLimit?: string | null;
     dockerInDocker?: boolean;
     secretProxy?: boolean;
+    githubUrl?: string | null;
   },
 ): Promise<RepoPod> {
   const repoUrl = normalizeRepoUrl(rawRepoUrl);
@@ -164,6 +165,7 @@ export async function getOrCreateRepoPod(
       },
       opts?.dockerInDocker,
       opts?.secretProxy,
+      opts?.githubUrl,
     );
   } catch (err: any) {
     if (err?.message?.includes("unique") || err?.code === "23505") {
@@ -197,6 +199,7 @@ async function createRepoPod(
   },
   dockerInDocker?: boolean,
   secretProxy?: boolean,
+  githubUrl?: string | null,
 ): Promise<RepoPod> {
   const [record] = await db
     .insert(repoPods)
@@ -299,7 +302,7 @@ spec:
         anthropicApiKey: env.ANTHROPIC_API_KEY,
       };
 
-      const envoyConfig = generateEnvoyConfig(proxySecrets);
+      const envoyConfig = generateEnvoyConfig(proxySecrets, githubUrl);
 
       // Create a ConfigMap for the Envoy config
       const configMapName = `envoy-config-${podName}`;

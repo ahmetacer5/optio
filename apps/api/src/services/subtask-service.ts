@@ -187,29 +187,34 @@ export async function onSubtaskComplete(subtaskId: string) {
       if (repoConfig?.autoMerge) {
         try {
           const { retrieveSecret } = await import("./secret-service.js");
+          const { getStoredGithubUrl } = await import("./github-url-service.js");
+          const {
+            parsePrUrl,
+            parseOwnerRepo: sharedParseOwnerRepo,
+            githubApi,
+          } = await import("@optio/shared");
           const githubToken = await retrieveSecret("GITHUB_TOKEN");
+          const githubUrl = await getStoredGithubUrl();
 
           // Parse PR number from URL
-          const prMatch = parent.prUrl.match(/\/pull\/(\d+)/);
-          const repoMatch = parent.repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-          if (prMatch && repoMatch) {
-            const prNumber = prMatch[1];
-            const [, owner, repo] = repoMatch;
+          const prParsed = parsePrUrl(parent.prUrl, githubUrl);
+          const repoParsed = sharedParseOwnerRepo(parent.repoUrl, githubUrl);
+          if (prParsed && repoParsed) {
+            const { prNumber } = prParsed;
+            const { owner, repo } = repoParsed;
+            const api = githubApi(githubUrl);
 
-            const mergeRes = await fetch(
-              `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/merge`,
-              {
-                method: "PUT",
-                headers: {
-                  Authorization: `Bearer ${githubToken}`,
-                  "User-Agent": "Optio",
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  merge_method: "squash",
-                }),
+            const mergeRes = await fetch(api.pullMerge(owner, repo, prNumber), {
+              method: "PUT",
+              headers: {
+                Authorization: `Bearer ${githubToken}`,
+                "User-Agent": "Optio",
+                "Content-Type": "application/json",
               },
-            );
+              body: JSON.stringify({
+                merge_method: "squash",
+              }),
+            });
 
             if (mergeRes.ok) {
               await taskService.transitionTask(

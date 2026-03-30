@@ -6,6 +6,11 @@ vi.mock("./secret-service.js", () => ({
   retrieveSecretWithFallback: vi.fn(),
 }));
 
+// Mock github-url-service
+vi.mock("./github-url-service.js", () => ({
+  getStoredGithubUrl: vi.fn().mockResolvedValue(null),
+}));
+
 // Mock logger
 vi.mock("../logger.js", () => ({
   logger: {

@@ -331,17 +331,22 @@ export async function transitionTask(
 
 async function closeGitHubIssue(repoUrl: string, issueNumber: string, prUrl?: string | null) {
   const { retrieveSecret } = await import("./secret-service.js");
+  const { getStoredGithubUrl } = await import("./github-url-service.js");
+  const { parseOwnerRepo, githubApi } = await import("@optio/shared");
   const token = await retrieveSecret("GITHUB_TOKEN");
-  const match = repoUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-  if (!match) return;
-  const [, owner, repo] = match;
+  const githubUrl = await getStoredGithubUrl();
+  const parsed = parseOwnerRepo(repoUrl, githubUrl);
+  if (!parsed) return;
+  const { owner, repo } = parsed;
+  const api = githubApi(githubUrl);
 
   // Post completion comment
   const comment = prUrl
     ? `✅ **Optio** completed this issue. Changes merged in ${prUrl}.`
     : `✅ **Optio** completed this issue.`;
 
-  await fetch(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
+  const issueNum = parseInt(issueNumber, 10);
+  await fetch(api.issueComments(owner, repo, issueNum), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -352,7 +357,7 @@ async function closeGitHubIssue(repoUrl: string, issueNumber: string, prUrl?: st
   });
 
   // Close the issue
-  await fetch(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`, {
+  await fetch(api.issue(owner, repo, issueNum), {
     method: "PATCH",
     headers: {
       Authorization: `Bearer ${token}`,

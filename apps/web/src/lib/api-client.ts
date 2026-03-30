@@ -275,10 +275,12 @@ export const api = {
   getSetupStatus: () =>
     request<{
       isSetUp: boolean;
+      githubUrl?: string | null;
+      tokenCreationUrl?: string;
       steps: Record<string, { done: boolean; label: string }>;
     }>("/api/setup/status"),
 
-  listUserRepos: (token: string) =>
+  listUserRepos: (token: string, githubUrl?: string) =>
     request<{
       repos: Array<{
         fullName: string;
@@ -293,13 +295,13 @@ export const api = {
       error?: string;
     }>("/api/setup/repos", {
       method: "POST",
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, githubUrl }),
     }),
 
-  validateGithubToken: (token: string) =>
+  validateGithubToken: (token: string, githubUrl?: string) =>
     request<{ valid: boolean; error?: string; user?: { login: string; name: string } }>(
       "/api/setup/validate/github-token",
-      { method: "POST", body: JSON.stringify({ token }) },
+      { method: "POST", body: JSON.stringify({ token, githubUrl }) },
     ),
 
   validateAnthropicKey: (key: string) =>
@@ -314,14 +316,14 @@ export const api = {
       body: JSON.stringify({ key }),
     }),
 
-  validateRepo: (repoUrl: string, token?: string) =>
+  validateRepo: (repoUrl: string, token?: string, githubUrl?: string) =>
     request<{
       valid: boolean;
       error?: string;
       repo?: { fullName: string; defaultBranch: string; isPrivate: boolean };
     }>("/api/setup/validate/repo", {
       method: "POST",
-      body: JSON.stringify({ repoUrl, token }),
+      body: JSON.stringify({ repoUrl, token, githubUrl }),
     }),
 
   getAuthStatus: () =>
